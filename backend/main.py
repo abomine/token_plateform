@@ -41,12 +41,13 @@ async def lifespan(app: FastAPI):
     # Schema must run at runtime (DB available), never during Nixpacks image build.
     # Soft-fail on Railway misconfig so the container stays up and /health explains it.
     try:
-        await apply_schema(settings=settings)
+        await apply_schema(seed=settings.seed_demo_user, settings=settings)
         await connect_pool(settings)
         app.state.db_ready = True
         logger.info(
-            "Database ready (%s)",
+            "Database ready (%s)%s",
             redact_database_url(settings.database_url),
+            " + demo seed" if settings.seed_demo_user else "",
         )
     except Exception as exc:  # noqa: BLE001 - keep process alive with clear /health status
         app.state.db_ready = False

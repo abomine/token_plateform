@@ -126,6 +126,8 @@ class Settings(BaseSettings):
     recent_transactions_limit: int = 25
     # Railway / managed Postgres often require SSL.
     database_ssl: bool | None = None
+    # Idempotent demo user/wallet seed (sql/seed.sql). Safe to leave on.
+    seed_demo_user: bool = True
 
     @model_validator(mode="before")
     @classmethod

@@ -56,9 +56,11 @@ Successful completions include `X-Credits-Deducted` (and `X-Credits-Remaining`).
 
 | When | Where |
 | --- | --- |
-| Normal deploy | Nowhere — startup applies `sql/schema.sql` automatically |
-| Seed demo user | Railway → service → **Shell**: `python -m backend.migrate --seed` |
+| Normal deploy | Nowhere — startup applies schema + demo seed (`SEED_DEMO_USER=true` by default) |
+| Manual seed in Railway shell | `/opt/venv/bin/python -m backend.migrate --seed` (plain `python` misses the venv) |
 | Local | after `docker compose up -d`: `python -m backend.migrate --seed` |
+
+Disable demo seed with `SEED_DEMO_USER=false`.
 
 Do **not** put migrate in a Procfile `release:` line: Nixpacks runs that during the image build, when Postgres is not available.
 
