@@ -5,17 +5,18 @@ Phase 1 backend MVP: users spend internal platform credits (1 USD = 1,000,000 cr
 ## Stack
 
 - FastAPI + httpx (async proxy)
-- PostgreSQL / Supabase (`sql/schema.sql`)
+- PostgreSQL / Supabase / Railway Postgres (`sql/schema.sql`)
 - asyncpg connection pool and row-level wallet locks
 
-## Quick start
+## Quick start (local)
 
 ```bash
 cp .env.example .env
 # set DEEPSEEK_API_KEY
 docker compose up -d
 python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
+python -m backend.migrate --seed
 uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
@@ -37,6 +38,23 @@ curl -s http://localhost:8000/v1/chat/completions \
 
 Successful completions include `X-Credits-Deducted` (and `X-Credits-Remaining`). Failed upstream calls never debit the wallet.
 
+## Deploy on Railway
+
+1. Create a new Railway project from this GitHub repo.
+2. Add a **PostgreSQL** plugin and link it to the web service (`DATABASE_URL` is injected automatically).
+3. Set service variables:
+   - `DEEPSEEK_API_KEY` (required)
+   - `PLATFORM_API_KEY` (optional shared Bearer secret)
+   - `MIN_PREFLIGHT_CREDITS=1000` (optional)
+4. Deploy. The release command runs `python -m backend.migrate` (schema only).
+5. Seed the demo wallet once from a one-off shell if useful:
+
+```bash
+python -m backend.migrate --seed
+```
+
+Health check: `GET /health`
+
 ## Credit math
 
 DeepSeek R1 list price, then a 20% platform markup, rounded up to a whole credit:
@@ -49,5 +67,6 @@ Pre-flight: HTTP 402 unless `credit_balance > 1000`.
 ## Tests
 
 ```bash
+pip install -r requirements-dev.txt
 pytest
 ```
