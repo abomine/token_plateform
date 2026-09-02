@@ -11,7 +11,7 @@ import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
-from backend.config import Settings, get_settings, redact_database_url
+from backend.config import Settings, get_settings, redact_database_url, database_url_source
 from backend.credits import calculate_credit_cost
 from backend.db import (
     InsufficientCreditsError,
@@ -124,6 +124,7 @@ async def health(request: Request) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "status": "ok" if ready else "degraded",
         "database": "ready" if ready else "not_ready",
+        "database_url_source": database_url_source(),
         "database_url_host": redact_database_url(settings.database_url),
     }
     if not ready:

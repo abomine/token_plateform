@@ -22,28 +22,43 @@ from backend.config import (
     Settings,
     database_host,
     database_url_env_hints,
+    database_url_source,
     get_settings,
+    is_railway_runtime,
     redact_database_url,
+    resolve_database_url_from_env,
 )
 
 ROOT = Path(__file__).resolve().parent.parent
 SCHEMA_PATH = ROOT / "sql" / "schema.sql"
 SEED_PATH = ROOT / "sql" / "seed.sql"
 
-_RAILWAY_DB_HELP = """
+_RAILWAY_MISSING_DB_HELP = """
+DATABASE_URL is NOT set on this Railway web service.
+The app fell back to the local default (localhost), which cannot work on Railway.
+
+Do this now:
+1. In the same Railway project: + New → Database → Add PostgreSQL
+   (skip if Postgres already exists in the project canvas).
+2. Open your **web** service → Variables → + New Variable → Add Variable Reference.
+3. Pick the Postgres service → choose DATABASE_PRIVATE_URL (preferred) or DATABASE_URL.
+4. Name the variable exactly: DATABASE_URL
+5. Wait for redeploy, then open /health — database should be "ready".
+
+Detected: {hints}
+""".strip()
+
+_RAILWAY_LOCALHOST_DB_HELP = """
 DATABASE_URL is set but still points at localhost (host={host}).
 Redacted value: {redacted}
 
-Your web service Variables currently contain a local/dev DSN, not Railway Postgres.
+You still have a local/dev DSN in Variables (often pasted from .env.example).
 
-Fix in the Railway dashboard:
-1. Open the PostgreSQL service → Variables, copy DATABASE_URL (or use Variable Reference).
-2. Open your **web** service → Variables.
-3. Edit DATABASE_URL — delete any value containing localhost / 127.0.0.1
-   (often pasted from .env.example).
-4. Set it via reference, e.g. DATABASE_URL = ${{Postgres.DATABASE_URL}}
-   Use the real Postgres service name shown in Railway if it is not "Postgres".
-5. Redeploy the web service.
+Fix:
+1. Web service → Variables → edit DATABASE_URL
+2. Delete the localhost value
+3. Use Add Variable Reference → Postgres → DATABASE_PRIVATE_URL (or DATABASE_URL)
+4. Redeploy
 
 Detected: {hints}
 """.strip()
@@ -61,17 +76,25 @@ def _connect_kwargs(settings: Settings) -> dict:
 
 
 def _assert_database_reachable_config(settings: Settings) -> None:
-    """Fail fast with a clear hint when DATABASE_URL still points at localhost."""
+    """Fail fast with a clear hint when DATABASE_URL is missing/localhost on Railway."""
+    if not is_railway_runtime():
+        return
+
     host = database_host(settings.database_url)
-    on_railway = bool(os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("RAILWAY_SERVICE_ID"))
-    if on_railway and host in {"localhost", "127.0.0.1", ""}:
-        raise DatabaseConfigError(
-            _RAILWAY_DB_HELP.format(
-                host=host or "?",
-                redacted=redact_database_url(settings.database_url),
-                hints=database_url_env_hints(settings.database_url),
-            )
+    if host not in {"localhost", "127.0.0.1", ""}:
+        return
+
+    hints = database_url_env_hints(settings.database_url)
+    if resolve_database_url_from_env() is None or database_url_source() == "app_default_localhost":
+        raise DatabaseConfigError(_RAILWAY_MISSING_DB_HELP.format(hints=hints))
+
+    raise DatabaseConfigError(
+        _RAILWAY_LOCALHOST_DB_HELP.format(
+            host=host or "?",
+            redacted=redact_database_url(settings.database_url),
+            hints=hints,
         )
+    )
 
 
 async def apply_sql(path: Path, settings: Settings | None = None) -> None:

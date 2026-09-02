@@ -79,11 +79,22 @@ def database_host(url: str) -> str:
     return (urlparse(normalize_database_url(url) or "").hostname or "").lower()
 
 
+def is_railway_runtime() -> bool:
+    return bool(os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("RAILWAY_SERVICE_ID"))
+
+
+def database_url_source() -> str:
+    """Where the effective DATABASE_URL came from."""
+    if resolve_database_url_from_env():
+        return "environment"
+    return "app_default_localhost"
+
+
 def database_url_env_hints(settings_url: str | None = None) -> str:
     """Safe debug list of which DB-related env vars are present (no secrets)."""
     present = [key for key in _DATABASE_URL_ENV_KEYS if os.getenv(key)]
     pg = [key for key in ("PGHOST", "PGUSER", "PGDATABASE", "PGPORT") if os.getenv(key)]
-    parts = []
+    parts = [f"source: {database_url_source()}"]
     if present:
         parts.append("URL vars: " + ", ".join(present))
     else:
@@ -96,6 +107,9 @@ def database_url_env_hints(settings_url: str | None = None) -> str:
     if raw:
         parts.append(f"parsed host: {database_host(raw) or '?'}")
         parts.append(f"redacted URL: {redact_database_url(raw)}")
+    elif settings_url:
+        parts.append(f"parsed host: {database_host(settings_url) or '?'}")
+        parts.append(f"redacted URL: {redact_database_url(settings_url)}")
     return "; ".join(parts)
 
 
