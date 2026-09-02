@@ -40,18 +40,23 @@ Successful completions include `X-Credits-Deducted` (and `X-Credits-Remaining`).
 
 ## Deploy on Railway
 
-1. Create a new Railway project from this GitHub repo.
-2. Add a **PostgreSQL** plugin and link it to the web service (`DATABASE_URL` is injected automatically).
+1. Create a new Railway project from this GitHub repo (`main`).
+2. Add a **PostgreSQL** plugin and **link it** to the web service (`DATABASE_URL` must be injected — otherwise the app still points at localhost).
 3. Set service variables:
    - `DEEPSEEK_API_KEY` (required)
    - `PLATFORM_API_KEY` (optional shared Bearer secret)
    - `MIN_PREFLIGHT_CREDITS=1000` (optional)
-4. Deploy. The release command runs `python -m backend.migrate` (schema only).
-5. Seed the demo wallet once from a one-off shell if useful:
+4. Deploy. Schema is applied **at app startup** (`python -m backend.migrate` is not a build step).
 
-```bash
-python -m backend.migrate --seed
-```
+### Where to run `python -m backend.migrate`
+
+| When | Where |
+| --- | --- |
+| Normal deploy | Nowhere — startup applies `sql/schema.sql` automatically |
+| Seed demo user | Railway → service → **Shell** / one-off run: `python -m backend.migrate --seed` |
+| Local | after `docker compose up -d`: `python -m backend.migrate --seed` |
+
+Do **not** put migrate in a Procfile `release:` line: Nixpacks runs that during the image build, when Postgres is not available (the `127.0.0.1:5432` failure you saw).
 
 Health check: `GET /health`
 

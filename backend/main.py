@@ -22,6 +22,7 @@ from backend.db import (
     fetch_wallet,
     get_pool,
 )
+from backend.migrate import apply_schema
 from backend.schemas import ChatCompletionRequest, TransactionOut, WalletBalanceOut
 
 MIN_PREFLIGHT_CREDITS = 1000
@@ -30,6 +31,8 @@ MIN_PREFLIGHT_CREDITS = 1000
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
+    # Schema must run at runtime (DB available), never during Nixpacks image build.
+    await apply_schema(settings=settings)
     await connect_pool(settings)
     timeout = httpx.Timeout(settings.http_timeout_seconds)
     app.state.http = httpx.AsyncClient(timeout=timeout)

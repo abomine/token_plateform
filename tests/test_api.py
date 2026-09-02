@@ -53,9 +53,13 @@ def api_client(monkeypatch, settings):
     async def _close():
         return None
 
+    async def _migrate(*_args, **_kwargs):
+        return None
+
     monkeypatch.setattr("backend.main.connect_pool", _connect)
     monkeypatch.setattr("backend.main.close_pool", _close)
     monkeypatch.setattr("backend.main.get_pool", lambda: pool)
+    monkeypatch.setattr("backend.main.apply_schema", _migrate)
 
     with TestClient(app) as client:
         client.pool = pool  # type: ignore[attr-defined]
