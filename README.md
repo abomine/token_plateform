@@ -50,6 +50,7 @@ Successful completions include `X-Credits-Deducted` (and `X-Credits-Remaining`).
    - Set `DEEPSEEK_API_KEY` (required)
    - Optional: `PLATFORM_API_KEY`, `MIN_PREFLIGHT_CREDITS=1000`
 4. Redeploy. Schema is applied **at app startup**.
+5. Open `GET /health` — if `database` is `not_ready`, your `DATABASE_URL` still points at localhost; fix the variable (see below) and redeploy again.
 
 ### Where to run `python -m backend.migrate`
 
