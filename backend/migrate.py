@@ -19,11 +19,26 @@ from urllib.parse import urlparse
 
 import asyncpg
 
-from backend.config import Settings, get_settings
+from backend.config import Settings, database_url_env_hints, get_settings
 
 ROOT = Path(__file__).resolve().parent.parent
 SCHEMA_PATH = ROOT / "sql" / "schema.sql"
 SEED_PATH = ROOT / "sql" / "seed.sql"
+
+_RAILWAY_DB_HELP = """
+DATABASE_URL is missing or still set to localhost on Railway.
+
+Fix in the Railway dashboard:
+1. Create / open a PostgreSQL service in the same project.
+2. Open your **web** service → Variables.
+3. Delete any DATABASE_URL you pasted from .env.example (localhost).
+4. Add a variable reference to Postgres, e.g.
+   DATABASE_URL = ${{Postgres.DATABASE_URL}}
+   (or DATABASE_PRIVATE_URL = ${{Postgres.DATABASE_PRIVATE_URL}})
+5. Redeploy the web service.
+
+Detected: {hints}
+""".strip()
 
 
 def _connect_kwargs(settings: Settings) -> dict:
@@ -38,11 +53,7 @@ def _assert_database_reachable_config(settings: Settings) -> None:
     host = (urlparse(settings.database_url).hostname or "").lower()
     on_railway = bool(os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("RAILWAY_SERVICE_ID"))
     if on_railway and host in {"localhost", "127.0.0.1", ""}:
-        raise RuntimeError(
-            "DATABASE_URL points at localhost inside Railway. "
-            "Add a PostgreSQL plugin and link it to this service so Railway "
-            "injects DATABASE_URL, then redeploy."
-        )
+        raise RuntimeError(_RAILWAY_DB_HELP.format(hints=database_url_env_hints()))
 
 
 async def apply_sql(path: Path, settings: Settings | None = None) -> None:

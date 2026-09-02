@@ -1,10 +1,21 @@
 """Normalize and expose runtime settings for local + Railway."""
 
-from functools import lru_cache
-from urllib.parse import urlparse
+from __future__ import annotations
 
-from pydantic import field_validator
+import os
+from functools import lru_cache
+from urllib.parse import quote_plus, urlparse
+
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Railway / Heroku-style names, checked in order when database_url is unset.
+_DATABASE_URL_ENV_KEYS = (
+    "DATABASE_URL",
+    "DATABASE_PRIVATE_URL",
+    "POSTGRES_URL",
+    "DATABASE_PUBLIC_URL",
+)
 
 
 def normalize_database_url(url: str) -> str:
@@ -29,6 +40,46 @@ def normalize_database_url(url: str) -> str:
     return value
 
 
+def build_database_url_from_pg_env() -> str | None:
+    """Build a DSN from PGHOST/PGUSER/... when Railway exposes discrete vars."""
+    host = os.getenv("PGHOST")
+    if not host:
+        return None
+    user = os.getenv("PGUSER") or "postgres"
+    password = os.getenv("PGPASSWORD") or ""
+    port = os.getenv("PGPORT") or "5432"
+    database = os.getenv("PGDATABASE") or "railway"
+    auth = quote_plus(user)
+    if password:
+        auth = f"{auth}:{quote_plus(password)}"
+    return f"postgresql://{auth}@{host}:{port}/{database}"
+
+
+def resolve_database_url_from_env() -> str | None:
+    for key in _DATABASE_URL_ENV_KEYS:
+        raw = os.getenv(key)
+        if raw and raw.strip():
+            return normalize_database_url(raw)
+    built = build_database_url_from_pg_env()
+    return normalize_database_url(built) if built else None
+
+
+def database_url_env_hints() -> str:
+    """Safe debug list of which DB-related env vars are present (no secrets)."""
+    present = [key for key in _DATABASE_URL_ENV_KEYS if os.getenv(key)]
+    pg = [key for key in ("PGHOST", "PGUSER", "PGDATABASE", "PGPORT") if os.getenv(key)]
+    parts = []
+    if present:
+        parts.append("URL vars: " + ", ".join(present))
+    else:
+        parts.append("URL vars: (none)")
+    if pg:
+        parts.append("PG* vars: " + ", ".join(pg))
+    else:
+        parts.append("PG* vars: (none)")
+    return "; ".join(parts)
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
@@ -42,6 +93,20 @@ class Settings(BaseSettings):
     recent_transactions_limit: int = 25
     # Railway / managed Postgres often require SSL.
     database_ssl: bool | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _pull_railway_database_url(cls, data: object) -> object:
+        if not isinstance(data, dict):
+            return data
+        current = data.get("database_url") or data.get("DATABASE_URL")
+        if isinstance(current, str) and current.strip():
+            data["database_url"] = normalize_database_url(current)
+            return data
+        resolved = resolve_database_url_from_env()
+        if resolved:
+            data["database_url"] = resolved
+        return data
 
     @field_validator("database_url", mode="before")
     @classmethod
@@ -59,9 +124,17 @@ class Settings(BaseSettings):
         }
         use_ssl = self.database_ssl
         if use_ssl is None:
-            host = urlparse(self.database_url).hostname or ""
-            # Local compose/dev hosts stay plaintext; managed hosts enable SSL.
-            use_ssl = host not in {"localhost", "127.0.0.1", "postgres", "db"}
+            host = (urlparse(self.database_url).hostname or "").lower()
+            # Local / private Railway mesh stay plaintext; public proxies need SSL.
+            if host.endswith(".railway.internal") or host in {
+                "localhost",
+                "127.0.0.1",
+                "postgres",
+                "db",
+            }:
+                use_ssl = False
+            else:
+                use_ssl = True
         if use_ssl:
             kwargs["ssl"] = True
         return kwargs
@@ -69,4 +142,9 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    overrides: dict[str, str] = {}
+    resolved = resolve_database_url_from_env()
+    if resolved:
+        # Prefer explicit Railway/Postgres env over any stale local default.
+        overrides["database_url"] = resolved
+    return Settings(**overrides)
