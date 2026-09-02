@@ -64,7 +64,22 @@ def resolve_database_url_from_env() -> str | None:
     return normalize_database_url(built) if built else None
 
 
-def database_url_env_hints() -> str:
+def redact_database_url(url: str) -> str:
+    """Hide credentials while keeping scheme/host/db for debugging."""
+    parsed = urlparse(normalize_database_url(url) or "")
+    host = parsed.hostname or "?"
+    port = f":{parsed.port}" if parsed.port else ""
+    db = parsed.path or ""
+    user = parsed.username or ""
+    auth = f"{user}:***@" if user else ("***@" if parsed.password else "")
+    return f"{parsed.scheme}://{auth}{host}{port}{db}"
+
+
+def database_host(url: str) -> str:
+    return (urlparse(normalize_database_url(url) or "").hostname or "").lower()
+
+
+def database_url_env_hints(settings_url: str | None = None) -> str:
     """Safe debug list of which DB-related env vars are present (no secrets)."""
     present = [key for key in _DATABASE_URL_ENV_KEYS if os.getenv(key)]
     pg = [key for key in ("PGHOST", "PGUSER", "PGDATABASE", "PGPORT") if os.getenv(key)]
@@ -77,6 +92,10 @@ def database_url_env_hints() -> str:
         parts.append("PG* vars: " + ", ".join(pg))
     else:
         parts.append("PG* vars: (none)")
+    raw = settings_url or os.getenv("DATABASE_URL") or resolve_database_url_from_env()
+    if raw:
+        parts.append(f"parsed host: {database_host(raw) or '?'}")
+        parts.append(f"redacted URL: {redact_database_url(raw)}")
     return "; ".join(parts)
 
 

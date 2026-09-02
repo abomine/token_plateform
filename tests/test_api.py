@@ -66,6 +66,22 @@ def api_client(monkeypatch, settings):
         yield client
 
 
+@pytest.fixture
+def degraded_client(monkeypatch, settings):
+    async def _migrate(*_args, **_kwargs):
+        raise RuntimeError(
+            "DATABASE_URL is set but still points at localhost (host=localhost).\n"
+            "Redacted value: postgresql://postgres:***@localhost:5432/credits"
+        )
+
+    monkeypatch.setattr("backend.main.apply_schema", _migrate)
+    monkeypatch.setattr("backend.main.connect_pool", AsyncMock())
+    monkeypatch.setattr("backend.main.close_pool", AsyncMock())
+
+    with TestClient(app) as client:
+        yield client
+
+
 def _wallet_row(balance: int):
     return {
         "user_id": UUID(DEMO_USER),
@@ -78,7 +94,26 @@ def _wallet_row(balance: int):
 def test_health(api_client: TestClient):
     response = api_client.get("/health")
     assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["database"] == "ready"
+
+
+def test_health_degraded_when_database_misconfigured(degraded_client: TestClient):
+    response = degraded_client.get("/health")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "degraded"
+    assert body["database"] == "not_ready"
+    assert "localhost" in (body.get("database_error") or "")
+
+
+def test_wallet_returns_503_when_database_not_ready(degraded_client: TestClient):
+    response = degraded_client.get(
+        "/wallet/balance",
+        headers={"X-Platform-User-Id": DEMO_USER},
+    )
+    assert response.status_code == 503
 
 
 def test_missing_user_header_is_unauthorized(api_client: TestClient):

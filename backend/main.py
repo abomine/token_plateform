@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 from typing import Any
 from uuid import UUID
@@ -10,7 +11,7 @@ import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
-from backend.config import Settings, get_settings
+from backend.config import Settings, get_settings, redact_database_url
 from backend.credits import calculate_credit_cost
 from backend.db import (
     InsufficientCreditsError,
@@ -25,22 +26,39 @@ from backend.db import (
 from backend.migrate import apply_schema
 from backend.schemas import ChatCompletionRequest, TransactionOut, WalletBalanceOut
 
+logger = logging.getLogger("uvicorn.error")
 MIN_PREFLIGHT_CREDITS = 1000
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
-    # Schema must run at runtime (DB available), never during Nixpacks image build.
-    await apply_schema(settings=settings)
-    await connect_pool(settings)
+    app.state.db_ready = False
+    app.state.db_error = None
     timeout = httpx.Timeout(settings.http_timeout_seconds)
     app.state.http = httpx.AsyncClient(timeout=timeout)
+
+    # Schema must run at runtime (DB available), never during Nixpacks image build.
+    # Soft-fail on Railway misconfig so the container stays up and /health explains it.
+    try:
+        await apply_schema(settings=settings)
+        await connect_pool(settings)
+        app.state.db_ready = True
+        logger.info(
+            "Database ready (%s)",
+            redact_database_url(settings.database_url),
+        )
+    except Exception as exc:  # noqa: BLE001 - keep process alive with clear /health status
+        app.state.db_ready = False
+        app.state.db_error = str(exc)
+        logger.error("Database startup failed; API routes will return 503.\n%s", exc)
+
     try:
         yield
     finally:
         await app.state.http.aclose()
-        await close_pool()
+        if app.state.db_ready:
+            await close_pool()
 
 
 app = FastAPI(
@@ -49,6 +67,15 @@ app = FastAPI(
     description="Spend platform credits (1 USD = 1,000,000 credits) on DeepSeek LLM calls.",
     lifespan=lifespan,
 )
+
+
+def require_database(request: Request) -> None:
+    if not getattr(request.app.state, "db_ready", False):
+        detail = getattr(request.app.state, "db_error", None) or "Database is not ready"
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=detail,
+        )
 
 
 def _parse_user_id(raw: str | None) -> str:
@@ -91,14 +118,24 @@ async def authenticate_user(
 
 
 @app.get("/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok"}
+async def health(request: Request) -> dict[str, Any]:
+    settings = get_settings()
+    ready = bool(getattr(request.app.state, "db_ready", False))
+    payload: dict[str, Any] = {
+        "status": "ok" if ready else "degraded",
+        "database": "ready" if ready else "not_ready",
+        "database_url_host": redact_database_url(settings.database_url),
+    }
+    if not ready:
+        payload["database_error"] = getattr(request.app.state, "db_error", None)
+    return payload
 
 
 @app.get("/wallet/balance", response_model=WalletBalanceOut)
 async def wallet_balance(
     user_id: str = Depends(authenticate_user),
     settings: Settings = Depends(get_settings),
+    _: None = Depends(require_database),
 ) -> WalletBalanceOut:
     pool = get_pool()
     async with pool.acquire() as conn:
@@ -135,6 +172,7 @@ async def chat_completions(
     request: Request,
     user_id: str = Depends(authenticate_user),
     settings: Settings = Depends(get_settings),
+    _: None = Depends(require_database),
 ) -> JSONResponse:
     """Proxy OpenAI-compatible chat completions through a credit gate."""
     if payload.stream:

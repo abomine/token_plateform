@@ -15,30 +15,42 @@ import argparse
 import asyncio
 import os
 from pathlib import Path
-from urllib.parse import urlparse
 
 import asyncpg
 
-from backend.config import Settings, database_url_env_hints, get_settings
+from backend.config import (
+    Settings,
+    database_host,
+    database_url_env_hints,
+    get_settings,
+    redact_database_url,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 SCHEMA_PATH = ROOT / "sql" / "schema.sql"
 SEED_PATH = ROOT / "sql" / "seed.sql"
 
 _RAILWAY_DB_HELP = """
-DATABASE_URL is missing or still set to localhost on Railway.
+DATABASE_URL is set but still points at localhost (host={host}).
+Redacted value: {redacted}
+
+Your web service Variables currently contain a local/dev DSN, not Railway Postgres.
 
 Fix in the Railway dashboard:
-1. Create / open a PostgreSQL service in the same project.
+1. Open the PostgreSQL service → Variables, copy DATABASE_URL (or use Variable Reference).
 2. Open your **web** service → Variables.
-3. Delete any DATABASE_URL you pasted from .env.example (localhost).
-4. Add a variable reference to Postgres, e.g.
-   DATABASE_URL = ${{Postgres.DATABASE_URL}}
-   (or DATABASE_PRIVATE_URL = ${{Postgres.DATABASE_PRIVATE_URL}})
+3. Edit DATABASE_URL — delete any value containing localhost / 127.0.0.1
+   (often pasted from .env.example).
+4. Set it via reference, e.g. DATABASE_URL = ${{Postgres.DATABASE_URL}}
+   Use the real Postgres service name shown in Railway if it is not "Postgres".
 5. Redeploy the web service.
 
 Detected: {hints}
 """.strip()
+
+
+class DatabaseConfigError(RuntimeError):
+    """Raised when DATABASE_URL is missing or still points at localhost on Railway."""
 
 
 def _connect_kwargs(settings: Settings) -> dict:
@@ -50,10 +62,16 @@ def _connect_kwargs(settings: Settings) -> dict:
 
 def _assert_database_reachable_config(settings: Settings) -> None:
     """Fail fast with a clear hint when DATABASE_URL still points at localhost."""
-    host = (urlparse(settings.database_url).hostname or "").lower()
+    host = database_host(settings.database_url)
     on_railway = bool(os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("RAILWAY_SERVICE_ID"))
     if on_railway and host in {"localhost", "127.0.0.1", ""}:
-        raise RuntimeError(_RAILWAY_DB_HELP.format(hints=database_url_env_hints()))
+        raise DatabaseConfigError(
+            _RAILWAY_DB_HELP.format(
+                host=host or "?",
+                redacted=redact_database_url(settings.database_url),
+                hints=database_url_env_hints(settings.database_url),
+            )
+        )
 
 
 async def apply_sql(path: Path, settings: Settings | None = None) -> None:
