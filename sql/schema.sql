@@ -49,6 +49,33 @@ CREATE INDEX IF NOT EXISTS idx_credit_transactions_user_created
 CREATE INDEX IF NOT EXISTS idx_api_logs_user_created
     ON api_logs (user_id, created_at DESC);
 
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'task_category') THEN
+        CREATE TYPE task_category AS ENUM ('Scraping', 'Prompting', 'Bug Fix');
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'task_status') THEN
+        CREATE TYPE task_status AS ENUM ('open', 'completed');
+    END IF;
+END
+$$;
+
+CREATE TABLE IF NOT EXISTS tasks (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    title           TEXT NOT NULL,
+    description     TEXT NOT NULL,
+    reward_credits  INTEGER NOT NULL CHECK (reward_credits > 0),
+    category        task_category NOT NULL,
+    status          task_status NOT NULL DEFAULT 'open',
+    created_by      UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    completed_by    UUID REFERENCES users (id) ON DELETE SET NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    completed_at    TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_tasks_status_created
+    ON tasks (status, created_at DESC);
+
 CREATE OR REPLACE FUNCTION set_wallets_updated_at()
 RETURNS TRIGGER AS $$
 BEGIN

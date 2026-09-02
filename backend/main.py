@@ -9,22 +9,37 @@ from uuid import UUID
 
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from backend.config import Settings, get_settings, redact_database_url, database_url_source
 from backend.credits import calculate_credit_cost
 from backend.db import (
     InsufficientCreditsError,
+    TaskNotFoundError,
+    TaskNotOpenError,
     WalletNotFoundError,
     apply_api_usage,
+    apply_topup,
     close_pool,
+    complete_task_with_reward,
     connect_pool,
+    create_task,
     fetch_recent_transactions,
     fetch_wallet,
     get_pool,
+    list_tasks,
 )
 from backend.migrate import apply_schema
-from backend.schemas import ChatCompletionRequest, TransactionOut, WalletBalanceOut
+from backend.schemas import (
+    ChatCompletionRequest,
+    TaskCreate,
+    TaskOut,
+    TopUpOut,
+    TopUpRequest,
+    TransactionOut,
+    WalletBalanceOut,
+)
 
 logger = logging.getLogger("uvicorn.error")
 MIN_PREFLIGHT_CREDITS = 1000
@@ -69,6 +84,17 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+_settings = get_settings()
+_cors_origins = [o.strip() for o in _settings.cors_origins.split(",") if o.strip()]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins if "*" not in _cors_origins else ["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["X-Credits-Deducted", "X-Credits-Remaining"],
+)
+
 
 def require_database(request: Request) -> None:
     if not getattr(request.app.state, "db_ready", False):
@@ -96,10 +122,11 @@ def _parse_user_id(raw: str | None) -> str:
 
 async def authenticate_user(
     x_platform_user_id: str | None = Header(default=None, alias="X-Platform-User-Id"),
+    x_user_id: str | None = Header(default=None, alias="X-User-Id"),
     authorization: str | None = Header(default=None),
     settings: Settings = Depends(get_settings),
 ) -> str:
-    """Identify the caller by X-Platform-User-Id.
+    """Identify the caller by X-Platform-User-Id (or legacy X-User-Id).
 
     When PLATFORM_API_KEY is configured, Authorization: Bearer <key> is also required.
     """
@@ -115,7 +142,7 @@ async def authenticate_user(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid API key",
             )
-    return _parse_user_id(x_platform_user_id)
+    return _parse_user_id(x_platform_user_id or x_user_id)
 
 
 @app.get("/health")
@@ -166,6 +193,85 @@ async def wallet_balance(
             for row in rows
         ],
     )
+
+
+@app.post("/wallet/topup", response_model=TopUpOut)
+async def wallet_topup(
+    payload: TopUpRequest,
+    user_id: str = Depends(authenticate_user),
+    _: None = Depends(require_database),
+) -> TopUpOut:
+    """Simulate a Stripe checkout credit purchase."""
+    pool = get_pool()
+    try:
+        async with pool.acquire() as conn:
+            balance = await apply_topup(
+                conn,
+                user_id=user_id,
+                amount=payload.amount,
+                description=f"simulated_stripe_topup:{payload.amount}",
+            )
+    except WalletNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unknown platform user",
+        ) from exc
+    return TopUpOut(credit_balance=balance, added=payload.amount)
+
+
+@app.get("/tasks", response_model=list[TaskOut])
+async def get_tasks(
+    status_filter: str | None = "open",
+    _: None = Depends(require_database),
+) -> list[TaskOut]:
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        rows = await list_tasks(conn, status=status_filter)
+    return [TaskOut(**dict(row)) for row in rows]
+
+
+@app.post("/tasks", response_model=TaskOut, status_code=status.HTTP_201_CREATED)
+async def post_task(
+    payload: TaskCreate,
+    user_id: str = Depends(authenticate_user),
+    _: None = Depends(require_database),
+) -> TaskOut:
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        row = await create_task(
+            conn,
+            user_id=user_id,
+            title=payload.title,
+            description=payload.description,
+            reward_credits=payload.reward_credits,
+            category=payload.category,
+        )
+    return TaskOut(**dict(row))
+
+
+@app.post("/tasks/{task_id}/respond", response_model=TaskOut)
+async def respond_task(
+    task_id: UUID,
+    user_id: str = Depends(authenticate_user),
+    _: None = Depends(require_database),
+) -> TaskOut:
+    """Complete a micro-task and credit the worker with the bounty."""
+    pool = get_pool()
+    try:
+        async with pool.acquire() as conn:
+            task, _balance = await complete_task_with_reward(
+                conn, task_id=str(task_id), user_id=user_id
+            )
+    except TaskNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found") from exc
+    except TaskNotOpenError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Task already completed") from exc
+    except WalletNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unknown platform user",
+        ) from exc
+    return TaskOut(**dict(task))
 
 
 @app.post("/v1/chat/completions")

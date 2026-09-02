@@ -75,9 +75,10 @@ DeepSeek R1 list price, then a 20% platform markup, rounded up to a whole credit
 
 Pre-flight: HTTP 402 unless `credit_balance > 1000`.
 
-## Tests
+## Frontend
 
 ```bash
-pip install -r requirements-dev.txt
-pytest
+cd frontend && npm install && npm run dev
 ```
+
+Set `NEXT_PUBLIC_API_URL` to your FastAPI base URL. Docs: `frontend/README.md`.

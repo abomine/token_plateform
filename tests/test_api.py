@@ -246,6 +246,52 @@ def test_post_flight_insufficient_credits_does_not_hide_provider_success(
     assert "No ledger debit was applied" in response.json()["detail"]
 
 
+def test_wallet_topup(api_client: TestClient, monkeypatch):
+    monkeypatch.setattr("backend.main.apply_topup", AsyncMock(return_value=5_100_000))
+    response = api_client.post(
+        "/wallet/topup",
+        headers={"X-Platform-User-Id": DEMO_USER},
+        json={"amount": 100_000},
+    )
+    assert response.status_code == 200
+    assert response.json() == {"credit_balance": 5_100_000, "added": 100_000}
+
+
+def test_list_and_create_tasks(api_client: TestClient, monkeypatch):
+    from datetime import datetime, timezone
+    from uuid import UUID
+
+    row = {
+        "id": UUID("00000000-0000-0000-0000-000000000101"),
+        "title": "Demo task",
+        "description": "Do the thing carefully",
+        "reward_credits": 25000,
+        "category": "Scraping",
+        "status": "open",
+        "created_by": UUID(DEMO_USER),
+        "completed_by": None,
+        "created_at": datetime.now(timezone.utc),
+        "completed_at": None,
+    }
+    monkeypatch.setattr("backend.main.list_tasks", AsyncMock(return_value=[row]))
+    listed = api_client.get("/tasks")
+    assert listed.status_code == 200
+    assert listed.json()[0]["title"] == "Demo task"
+
+    monkeypatch.setattr("backend.main.create_task", AsyncMock(return_value=row))
+    created = api_client.post(
+        "/tasks",
+        headers={"X-User-Id": DEMO_USER},
+        json={
+            "title": "Demo task",
+            "description": "Do the thing carefully",
+            "reward_credits": 25000,
+            "category": "Scraping",
+        },
+    )
+    assert created.status_code == 201
+
+
 def test_streaming_rejected(api_client: TestClient, monkeypatch):
     monkeypatch.setattr("backend.main.fetch_wallet", AsyncMock(return_value=_wallet_row(5_000_000)))
     response = api_client.post(

@@ -128,6 +128,8 @@ class Settings(BaseSettings):
     database_ssl: bool | None = None
     # Idempotent demo user/wallet seed (sql/seed.sql). Safe to leave on.
     seed_demo_user: bool = True
+    # Comma-separated browser origins allowed by CORS (use * for all).
+    cors_origins: str = "*"
 
     @model_validator(mode="before")
     @classmethod
